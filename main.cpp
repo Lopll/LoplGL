@@ -1,10 +1,12 @@
+#include <iostream>
 #include <vector>
 #include <cmath>
-#include <iostream>
-#include <cstdlib> // for rand
+#include <limits>
 #include "tgaimage.h"
 #include "model.h"
 #include "geometry.h"
+
+
 
 const TGAColor white = TGAColor(255, 255, 255, 255);
 const TGAColor red   = TGAColor(255, 0,   0,   255);
@@ -12,123 +14,109 @@ const TGAColor green   = TGAColor(0, 255,   0,   255);
 const TGAColor blue   = TGAColor(0, 0,   255,   255);
 
 Model *model = NULL;
+int* zBuffer = NULL;
+Vec3f lightDir(0,0,-1);
 
-const int width  = 2000;
-const int height = 2000;
+const int width  = 800;
+const int height = 800;
+const int depth = 255;
+
 int unZoomLevel = 2;
 int unZoomX = width/unZoomLevel;
 int unZoomY = height/unZoomLevel;
+int unZoomZ = depth/unZoomLevel;
 int deltaPos = unZoomLevel/2;
 
-void line(Vec2i p0, Vec2i p1, TGAImage &image, const TGAColor &color)
+// line for 3D!
+void rasterize(Vec3i p0, Vec3i p1, TGAImage &image, TGAColor color, int zBuffer[])
 {
-	bool steep = false;
-    if (std::abs(p0.x-p1.x)<std::abs(p0.y-p1.y)) // if the line is steep, we transpose the image
-    { 
-        std::swap(p0.x, p0.y);
-        std::swap(p1.x, p1.y);
-        steep = true;
+    if (p0.x > p1.x) // left-to-right rule
+    {
+        std::swap(p0, p1);
     }
-    if (p0.x>p1.x) // make it left-to-right
-    { 
-        std::swap(p0.x, p1.x);
-        std::swap(p0.y, p1.y);
-    }
-    
-    int dx = p1.x-p0.x;
-    int dy = p1.y-p0.y;
-    float derror2 = std::abs(dy)*2;
-    float error2 = 0;
-    int y = p0.y;
-
     for (int x=p0.x; x<=p1.x; x++) 
     {
-        if (steep) 
+        float t = (x-p0.x)/(float)(p1.x-p0.x);
+        int y = p0.y*(1.-t) + p1.y*t;
+        int z = p0.z*(1.-t) + p1.z*t;
+        int idx = x + y*width;
+        if (zBuffer[idx]<z) 
         {
-            image.set(y, x, color); // if transposed, de-transpose
-        } 
-        else 
-        {
+            zBuffer[idx] = z;
             image.set(x, y, color);
-        }
-        error2 += derror2;
-        
-        if (error2 > dx)
-        {
-        	y += (p1.y>p0.y?1:-1);
-        	error2 -= dx*2;
         }
     }
 }
 
-void triangle(const Vec2i p0, const Vec2i p1, const Vec2i p2, TGAImage &image, const TGAColor &color)
-{
-    line(p0, p1, image, color);
-    line(p1, p2, image, color);
-    line(p0, p2, image, color);
-}
 
-void filledTriangle(Vec2i p0, Vec2i p1, Vec2i p2, TGAImage &image, const TGAColor &color)
+void filledTriangle(Vec3i p0, Vec3i p1, Vec3i p2, TGAImage &image, Vec2i uv0, Vec2i uv1, Vec2i uv2, float intensity, int* zBuffer)
 {
+    if (p0.y==p1.y && p0.y == p2.y) return; // degenerate triangle
+    
+    // bubble sort triangles by y coordinate
     if (p0.y>p1.y) std::swap(p0, p1);
     if (p0.y>p2.y) std::swap(p0, p2);
     if (p1.y>p2.y) std::swap(p1, p2);
     
-    line(p0, p1, image, color);
-    line(p1, p2, image, color);
-    line(p0, p2, image, color);
-    
-    int dx01 = (p1.x - p0.x);
-    int dy01 = std::abs(p1.y - p0.y);
-    
-    int dx02 = (p2.x - p0.x);
-    int dy02 = std::abs(p2.y - p0.y);
-    
-    int dx21 = (p2.x - p1.x);
-    int dy21 = std::abs(p2.y - p1.y);
-    
-    float slope01 = (float)dx01/(float)dy01;
-    float slope02 = (float)dx02/(float)dy02;
-    float slope21 = (float)dx21/(float)dy21; 
-    
-    for(int y = p0.y; y < p2.y; y++)
+    int totalH = p2.y-p0.y;
+    for (int i=0; i<totalH; i++) 
     {
-        int x01;
-        int x02 = p0.x + slope02 * (y - p0.y);;
-        if (y < p1.y)
-        {
-            x01 = p0.x + slope01 * (y - p0.y);
-        }
-        else
-        {
-            x01 = p2.x + slope21 * (y - p2.y); // p1.x - slope12 * (y - p1.y);
-        }
-        // std::cout << "y: " << y << ", x02: " << x02 << ", x01: " << x01 << std::endl;
-        line(Vec2i(x01,y), Vec2i(x02,y), image, color);
+        bool secondHalf = i>p1.y-p0.y || p1.y==p0.y;
+        int segmentH = secondHalf ? p2.y-p1.y : p1.y-p0.y;
+        float alpha = (float) i / totalH;
+        float beta  = (float)(i-(secondHalf ? p1.y-p0.y : 0))/segmentH; // be careful: with above conditions no division by zero here
         
+        Vec3i A =              p0 + Vec3f(p2-p0  )*alpha;
+        Vec3i B = secondHalf ? p1 + Vec3f(p2-p1  )*beta : p0 + Vec3f(p1-p0)*beta;
+        Vec2i uvA =            uv0+      (uv2-uv0)*alpha;
+        Vec2i uvB = secondHalf?uv1+      (uv2-uv1)*beta : uv0 +     (uv1-uv0)*beta;
+        
+        if (A.x>B.x) 
+        {
+            std::swap(A, B); 
+            std::swap(uvA, uvB);
+        }
+        
+        for (int j=A.x; j<=B.x; j++) 
+        {
+            float phi = B.x==A.x ? 1. : (float)(j-A.x)/(float)(B.x-A.x);
+            
+            Vec3i P = Vec3f(A) + Vec3f(B-A)*phi;
+            Vec2i uvP =   uvA  +  (uvB-uvA)*phi;
+            
+            int idx = P.x+P.y*width;
+            if (zBuffer[idx]<P.z) 
+            {
+                zBuffer[idx] = P.z;
+                TGAColor color = model->diffuse(uvP);
+                image.set(P.x, P.y, TGAColor(color.r * intensity, color.g * intensity, color.b * intensity, 255));
+            }
+        }
     }
 }
 
 // rendering model.obj
-void renderModel(Model *model, TGAImage &image, Vec3f &lightDir)
+void renderModel(Model *model, TGAImage &image, Vec3f &lightDir, int* zBuffer)
 {
     for(int i = 0; i < model->nfaces(); i++)
 	{ 
 		std::vector<int> face = model->face(i);
-		Vec2i screenCoords[3];
+		Vec3i screenCoords[3];
 		Vec3f worldCoords[3];
+		Vec2i uv[3];
         for(int j = 0; j < 3; j++)
         {
             Vec3f v = model->vert(face[j]);
-            screenCoords[j] = Vec2i((v.x+deltaPos)*unZoomX, (v.y+deltaPos)*unZoomY);
+            screenCoords[j] = Vec3i((v.x+deltaPos)*unZoomX, (v.y+deltaPos)*unZoomY, (v.z+deltaPos)*unZoomZ);
             worldCoords[j] = v;
+            uv[j] = model->uv(i,j);
         }
         Vec3f n = (worldCoords[2]-worldCoords[0])^(worldCoords[1]-worldCoords[0]);
         n.normalize();
         float intensity = n*lightDir;
         if (intensity>0) 
         {
-            filledTriangle(screenCoords[0], screenCoords[1], screenCoords[2], image, TGAColor(intensity*255, intensity*255, intensity*255, 255));
+            filledTriangle(screenCoords[0], screenCoords[1], screenCoords[2], image, uv[0], uv[1], uv[2], intensity, zBuffer);
         }
 	}
 }
@@ -137,21 +125,39 @@ int main() {
     model = new Model("obj/african_head.obj");
 
 	// img set up
-	TGAImage image(width, height, TGAImage::RGB);
+	TGAImage render(width, height, TGAImage::RGB);
+	
+    // TGAImage texture;
+    // texture.read_tga_file("obj/african_head_diffuse.tga");
 
-	// graphic
-	Vec2i t0[3] = {Vec2i(10, 70),   Vec2i(50, 160),  Vec2i(70, 80)};
-    Vec2i t1[3] = {Vec2i(180, 50),  Vec2i(150, 1),   Vec2i(70, 180)};
-    Vec2i t2[3] = {Vec2i(180, 150), Vec2i(120, 160), Vec2i(130, 180)};
+	zBuffer = new int[width*height];
+	for(int i = 0; i < width*height; i++)
+	{
+	   zBuffer[i] = std::numeric_limits<int>::min();
+	}
 	
-	Vec3f lightDir(0,0,-1);
 	
-    renderModel(model, image, lightDir);
+	
+	
+    renderModel(model, render, lightDir, zBuffer);
+	
+	{ // dump z-buffer (debugging purposes only)
+        TGAImage zbimage(width, height, TGAImage::GRAYSCALE);
+        for (int i=0; i<width; i++) {
+            for (int j=0; j<height; j++) {
+                zbimage.set(i, j, TGAColor(zBuffer[i+j*width], 1));
+            }
+        }
+        zbimage.flip_vertically(); // i want to have the origin at the left bottom corner of the image
+        zbimage.write_tga_file("zbuffer.tga");
+    }
 	
 	// end render
-	image.flip_vertically(); // i want to have the origin at the left bottom corner of the image
-	image.write_tga_file("output.tga");
+	render.flip_vertically(); // i want to have the origin at the left bottom corner of the image
+	render.write_tga_file("render.tga");
+	
 	delete model;
+	delete [] zBuffer;
 	return 0;
 }
 
