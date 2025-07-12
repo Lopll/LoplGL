@@ -54,9 +54,21 @@ void filledTriangle(Vec3i p0, Vec3i p1, Vec3i p2, TGAImage &image, Vec2i uv0, Ve
     if (p0.y==p1.y && p0.y == p2.y) return; // degenerate triangle
     
     // bubble sort triangles by y coordinate
-    if (p0.y>p1.y) std::swap(p0, p1);
-    if (p0.y>p2.y) std::swap(p0, p2);
-    if (p1.y>p2.y) std::swap(p1, p2);
+    if (p0.y>p1.y) 
+    {
+        std::swap(p0, p1);
+        std::swap(uv0, uv1);
+    }
+    if (p0.y>p2.y) 
+    {
+        std::swap(p0, p2);
+        std::swap(uv0, uv2);
+    }
+    if (p1.y>p2.y) 
+    {
+        std::swap(p1, p2);
+        std::swap(uv1, uv2);
+    }
     
     int totalH = p2.y-p0.y;
     for (int i=0; i<totalH; i++) 
@@ -66,6 +78,7 @@ void filledTriangle(Vec3i p0, Vec3i p1, Vec3i p2, TGAImage &image, Vec2i uv0, Ve
         float alpha = (float) i / totalH;
         float beta  = (float)(i-(secondHalf ? p1.y-p0.y : 0))/segmentH; // be careful: with above conditions no division by zero here
         
+        //interpolation inside the triangle
         Vec3i A =              p0 + Vec3f(p2-p0  )*alpha;
         Vec3i B = secondHalf ? p1 + Vec3f(p2-p1  )*beta : p0 + Vec3f(p1-p0)*beta;
         Vec2i uvA =            uv0+      (uv2-uv0)*alpha;
